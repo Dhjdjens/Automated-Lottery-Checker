@@ -7,7 +7,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC 
 from selenium.common.exceptions import TimeoutException 
 
-# 📌 固定的開獎日期對照表，將日期與威力彩期數關聯起來，為後續查詢提供依據
+# 📌 這是查詢威力彩開獎日期與期數的對照表，後面會用來根據日期找到對應期數
 LOTTERY_SCHEDULE = [
     # 113年 (2024) 的開獎日期與期數
     {'date': '113/01/01', 'period': '113000001'}, {'date': '113/01/04', 'period': '113000002'},
@@ -88,44 +88,43 @@ LOTTERY_SCHEDULE = [
     {'date': '114/06/05', 'period': '114000045'}, {'date': '114/06/09', 'period': '114000046'},
     {'date': '114/06/12', 'period': '114000047'},
 ]
-# 🧠 [1] 將使用者輸入的日期對照到期數（透過 LOTTERY_SCHEDULE 查表）
+# 🧠 [1] 根據使用者輸入的日期去查表，取得對應的期數
 def get_period_from_date(target_date):
     for draw in LOTTERY_SCHEDULE:
         if draw['date'] == target_date:
-            return draw['period']
-    return None
+            return draw['period'] # 找到就回傳期數
+    return None # 沒找到就回 None，後續會處理錯誤訊息
     
-# 🧠 [2] 利用 Selenium 模擬網頁操作並抓取原始碼
+# 🧠 [2] 用 Selenium 開啟無頭 Chrome 瀏覽器，自動操作網頁來抓取指定期數的開獎頁面 HTML
 def get_html_by_period(period_number):
     url = 'https://www.taiwanlottery.com/lotto/result/super_lotto638'
     driver = None
     print(f"\n -> 正在用期數 {period_number} 進行查詢...")
     try:
         options = webdriver.ChromeOptions()
-        options.add_argument('--headless') # 設定為無頭模式，即不顯示瀏覽器介面
-        options.add_argument('--disable-gpu') # 減少資源耗用
+        options.add_argument('--headless') # 不開啟瀏覽器視窗，提高執行效率和穩定性
+        options.add_argument('--disable-gpu') # 避免 GPU 相關錯誤，讓程式更穩定
         
         driver = webdriver.Chrome(options=options)
         
-        wait = WebDriverWait(driver, 15)
+        wait = WebDriverWait(driver, 15) # 最長等待 15 秒，避免無限等待
         
         driver.get(url)
 
-        # ✅ 重要：找到輸入框並輸入期數
+        # ✅ 找到期數輸入欄位後輸入期數
         period_input = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@placeholder='請輸入九碼期別，例：113000001']")))
-        period_input.send_keys(period_number) # 輸入期數
+        period_input.send_keys(period_number) 
 
-        # ✅ 重要：點擊查詢按鈕
+        # ✅ 找查詢按鈕並用 JavaScript 觸發點擊事件，較不易失敗
         query_button = driver.find_element(By.CSS_SELECTOR, ".search-area-btn")
-        # 使用 JavaScript 點擊按鈕，有時比直接 click() 方法更穩定
         driver.execute_script("arguments[0].click();", query_button)
 
       
-        # ✅ 關鍵：等待指定期數的標題出現，表示頁面成功載入
+        # ✅ 等待查詢結果頁面上的期數標題出現，確保資料載入完成
         wait.until(EC.presence_of_element_located((By.XPATH, f"//div[@class='period-title' and contains(text(), '{period_number}')]")))
         
         print(" -> 查詢成功，已獲取網頁原始碼。")
-        return driver.page_source # 返回網頁的原始HTML內容
+        return driver.page_source # 回傳完整的 HTML 內容
     except TimeoutException:
         print(f" -> 查詢期數 {period_number} 超時，可能網頁加載過慢或元素未出現。")
         return None
@@ -134,35 +133,36 @@ def get_html_by_period(period_number):
         return None
     finally:
         if driver:
-            driver.quit()
-# 🧠 [3] 使用 BeautifulSoup 解析頁面並擷取中獎號碼
+            driver.quit() # 無論成功失敗都要關閉瀏覽器，避免資源浪費
+
+# 🧠 [3] 使用 BeautifulSoup 解析抓到的 HTML，從中抽取中獎號碼（第一區跟特別號）
 def parse_lotto_numbers(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
     item = soup.find('div', class_='result-item')
     if not item:
-        return None
+        return None # 找不到結果區塊就回 None
     
-    # ✅ 擷取期數（顯示於查詢結果上方）
+    # ✅ 取得顯示的期數文字
     period_tag = item.find('div', class_='period-title')
     period_number = period_tag.text.strip() if period_tag else "期數不明" 
 
     regular_numbers = [] 
-    special_number = '未找到' 
+    special_number = '未找到' # 預設沒找到特別號
 
-    # ✅ 取得所有中獎球的容器，區分為第一區與特別號
+    # ✅ 找所有中獎號碼球的區塊
     numbers_container = item.find('div', class_='winner-number-other-container')
     if numbers_container:
         all_balls = numbers_container.find_all('div', class_='ball')
         for ball in all_balls:
-            # 🔍 透過 class 判斷是否為特別號球
+            # 🔍 判斷球的 class 是否是特別號，特別號通常有特別的 class 標示
             if 'color-super' in ball.get('class', []): 
             else:
                 regular_numbers.append(ball.text.strip()) 
-    
+    # 回傳一個字典，包含期數、第一區號碼和特別號
     return {'period': period_number, 'regular_numbers': regular_numbers, 'special_number': special_number}
 
 
-# 🎯 主程式執行區：不斷讓使用者輸入日期查詢
+# 🎯 主程式：讓使用者一直輸入日期查詢，直到輸入空白離開
 while True: 
     raw_date_input = input("\n請輸入要查詢的威力彩日期 (格式：年/月/日，民國年)，或按 Enter 離開: ")
     if not raw_date_input:
@@ -176,10 +176,10 @@ while True:
         
        
         year_part = int(parts[0])
-        month_part = f"{int(parts[1]):02d}" 
-        day_part = f"{int(parts[2]):02d}" 
+        month_part = f"{int(parts[1]):02d}" # 自動補零，例如 3 變 03
+        day_part = f"{int(parts[2]):02d}"  # 自動補零
         
-        # ✅ 限制查詢範圍：不允許查詢民國112年以前
+        # ✅ 限制查詢範圍，只能查民國 113 年（2024）以後的資料
         if year_part < 113:
             print(" -> 112年以前的歷史資料，目前本系統不提供查詢")
             continue 
@@ -192,16 +192,16 @@ while True:
         print(f" -> 錯誤：輸入的日期格式 '{raw_date_input}' 不正確。")
         continue 
     
-    # 🧠 查表取得對應期數
+    # 🧠 查表得到對應的威力彩期數
     target_period = get_period_from_date(normalized_date)
     if not target_period:
         print(f" -> 錯誤：在本程式的開獎日曆中找不到日期 {normalized_date}。")
         continue 
 
     print(f" -> 經查，日期 {normalized_date} 對應的期數為 {target_period}。")
-    html = get_html_by_period(target_period) 
+    html = get_html_by_period(target_period) # 用 Selenium 拿網頁原始碼
     if html:
-        lotto_data = parse_lotto_numbers(html) 
+        lotto_data = parse_lotto_numbers(html) # 用 BeautifulSoup 解析中獎號碼
         if lotto_data: 
             print("\n----------- 查詢結果 -----------")
             print(f"開獎日期: {normalized_date}")
